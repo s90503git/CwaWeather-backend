@@ -10,6 +10,10 @@ const PORT = process.env.PORT || 3000;
 const CWA_API_BASE_URL = "https://opendata.cwa.gov.tw/api";
 const CWA_API_KEY = process.env.CWA_API_KEY;
 
+// 修改處：環境部 (MOENV) API 設定
+const MOENV_API_BASE_URL = "https://data.moenv.gov.tw/api/v2";
+const MOENV_API_KEY = process.env.MOENV_API_KEY; // 請確認 .env 有設定此 KEY
+
 // Middleware
 app.use(cors());
 app.use(express.json());
@@ -30,9 +34,9 @@ const getKaohsiungWeather = async (req, res) => {
       });
     }
 
-    // 呼叫 CWA API - 一般天氣預報（36小時）
-    // API 文件: https://opendata.cwa.gov.tw/dist/opendata-swagger.html
-    const response = await axios.get(
+    // 修改處：同時發送兩個請求 (天氣預報 + 空氣品質)
+    // 1. CWA API - 一般天氣預報（36小時）
+    const weatherPromise = axios.get(
       `${CWA_API_BASE_URL}/v1/rest/datastore/F-C0032-001`,
       {
         params: {
@@ -42,20 +46,57 @@ const getKaohsiungWeather = async (req, res) => {
       }
     );
 
-    // 取得高雄市的天氣資料
-    const locationData = response.data.records.location[0];
+    // 2. MOENV API - 空氣品質指標 (AQI)
+    // 使用 aqx_p_432 (每小時更新資料)
+    let aqiPromise = null;
+    if (MOENV_API_KEY) {
+      aqiPromise = axios.get(`${MOENV_API_BASE_URL}/aqx_p_432`, {
+        params: {
+          api_key: MOENV_API_KEY,
+          limit: 1000,
+          sort: "ImportDate desc",
+          format: "JSON",
+        },
+      });
+    }
+
+    // 等待所有請求完成
+    const [weatherResponse, aqiResponse] = await Promise.all([
+      weatherPromise,
+      aqiPromise ? aqiPromise.catch((err) => null) : null, // 容錯處理：如果 AQI 失敗不影響天氣顯示
+    ]);
+
+    // 取得天氣資料
+    const locationData = weatherResponse.data.records.location[0];
 
     if (!locationData) {
       return res.status(404).json({
         error: "查無資料",
-        message: "無法取得高雄市天氣資料",
+        message: "無法取得天氣資料",
       });
+    }
+
+    // 修改處：處理空氣品質資料
+    let airQualityData = "無資料";
+    if (aqiResponse && aqiResponse.data && aqiResponse.data.records) {
+      // 尋找對應縣市的測站 (這裡以"新北市"為例，優先抓取板橋站，若無則抓該縣市第一筆)
+      const records = aqiResponse.data.records;
+      const targetCity = locationData.locationName; // "新北市"
+      
+      const station =
+        records.find(
+          (site) => site.county === targetCity && site.sitename === "板橋"
+        ) || records.find((site) => site.county === targetCity);
+
+      if (station) {
+        airQualityData = `${station.status} (AQI: ${station.aqi})`;
+      }
     }
 
     // 整理天氣資料
     const weatherData = {
       city: locationData.locationName,
-      updateTime: response.data.records.datasetDescription,
+      updateTime: weatherResponse.data.records.datasetDescription,
       forecasts: [],
     };
 
@@ -73,6 +114,8 @@ const getKaohsiungWeather = async (req, res) => {
         maxTemp: "",
         comfort: "",
         windSpeed: "",
+        humidity: "",
+        airQuality: airQualityData, // 修改處：填入處理後的空氣品質資料
       };
 
       weatherElements.forEach((element) => {
@@ -96,6 +139,9 @@ const getKaohsiungWeather = async (req, res) => {
           case "WS":
             forecast.windSpeed = value.parameterName;
             break;
+          case "RH":
+            forecast.humidity = value.parameterName + "%";
+            break;
         }
       });
 
@@ -112,8 +158,8 @@ const getKaohsiungWeather = async (req, res) => {
     if (error.response) {
       // API 回應錯誤
       return res.status(error.response.status).json({
-        error: "CWA API 錯誤",
-        message: error.response.data.message || "無法取得天氣資料",
+        error: "API 錯誤",
+        message: error.response.data.message || "無法取得資料",
         details: error.response.data,
       });
     }
