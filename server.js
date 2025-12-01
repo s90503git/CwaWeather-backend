@@ -76,22 +76,24 @@ const getKaohsiungWeather = async (req, res) => {
       });
     }
 
-    // 修改處：處理空氣品質資料
-    let airQualityData = "無資料";
-    if (aqiResponse && aqiResponse.data && aqiResponse.data.records) {
-      // 尋找對應縣市的測站 (這裡以"新北市"為例，優先抓取板橋站，若無則抓該縣市第一筆)
-      const records = aqiResponse.data.records;
-      const targetCity = locationData.locationName; // "新北市"
-      
-      const station =
-        records.find(
-          (site) => site.county === targetCity && site.sitename === "板橋"
-        ) || records.find((site) => site.county === targetCity);
+		// 【修正處】處理空氣品質資料：只傳遞 AQI 數值或 'N/A'
+		let airQualityAqi = "N/A"; // 預設值為 'N/A'
+		if (aqiResponse && aqiResponse.data && aqiResponse.data.records) {
+			// 尋找對應縣市的測站 (這裡以"新北市"為例，優先抓取板橋站，若無則抓該縣市第一筆)
+			const records = aqiResponse.data.records;
+			const targetCity = locationData.locationName; // "新北市"
+			
+			const station =
+				records.find(
+					(site) => site.county === targetCity && site.sitename === "板橋"
+				) || records.find((site) => site.county === targetCity);
 
-      if (station) {
-        airQualityData = `${station.status} (AQI: ${station.aqi})`;
-      }
-    }
+			if (station && station.aqi) {
+				// 只傳遞純 AQI 數值（字串形式），讓前端進行判斷
+				airQualityAqi = station.aqi; 
+			}
+		}
+    // 【修正結束】
 
     // 整理天氣資料
     const weatherData = {
